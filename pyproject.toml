@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools_scm[toml]>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secure_file_server"
+version = "1.0"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "bcrypt==4.2.0",
+    "cryptography==43.0.3",
+    "Flask==3.0.3",
+    "Flask-Mailman==1.1.1",
+    "Flask-Limiter==3.8.0",
+    "requests==2.32.3",
+    "Werkzeug==3.1.3",
+]
+
+[project.scripts]
+server = "server:main"
+client = "client:main"
+
+[project.optional-dependencies]
+dev = [
+    "ruff==0.1.0"
+]
+
+[tool.ruff]
+src = ["src"]
+line-length = 80
+target-version = "py39"
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["D","COM812", "ISC001", "ANN101", "PT001", "PT004", "PT005", "PT023"]
+unfixable = []
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
