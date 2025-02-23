@@ -37,20 +37,25 @@ Enter password & random mail (no email sent). 2Fa Code will be in `data/server/u
 `get shared frog` the file will be in data/client/downloaded_files
 
 
-## done
+## client-tui
 
-1. enhance key management
-    - generate a unique FEK (file encryption key)
-    - derive master key from user ['generate_key'](src/utils/utils.py#L15)
-    - encrypt FEK using master key
-    - store encrypted FEK and Salt
-    - decrypt: retrieve encrypted FEK, salt and decrypt using master key
-2. introduce multiple users
-3. implement mTLS for secure connection to server
-4. change fek procedure so that the metadata is stored per user (knowledge of which files thave been uploaded)
-5. sign all uploaded data with private key (access control through public key)
-6. enable 2FA using flask mailman (mailman setup complete)
-7. implement file sharing mechanisms
-    - retrieve registered users, select user to share the file with, encrypt using his public key
-    - how does the server notify the registered user of a new file for him (the server needs to connect filename and user_id still)
-    - what happens to unique feks in this case? if I still use them, how is the fek shared with the other user? -> SOLUTION: a keys file with encrypted feks for the userfile, if a new user registers...see overleaf
+* Provides a nice user interface with:
+
+* A main menu screen
+ 
+* A login screen
+ 
+* A registration screen
+ 
+* A logged-in screen
+ 
+* Includes keyboard shortcuts:
+ 
+* Ctrl+Q to quit
+ 
+* Ctrl+L to open login screen
+ 
+* Ctrl+R to open registration screen
+ 
+* Escape to go back/logout
+
