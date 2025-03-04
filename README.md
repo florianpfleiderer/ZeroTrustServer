@@ -36,6 +36,51 @@ Enter password & random mail (no email sent). 2Fa Code will be in `data/server/u
 
 `get shared frog` the file will be in data/client/downloaded_files
 
+## Rich CLI Interface
+
+The application now includes an improved command-line interface using the Rich library for better visual feedback and user experience. Features include:
+
+- Colorful and styled output
+- Progress bars for file operations
+- Tables for displaying users and files
+- Interactive prompts and confirmations
+- Better error messages with appropriate styling
+- Numbered menu options for quicker command selection
+
+To use the improved CLI, make sure to install the required dependencies:
+
+```bash
+pip install -e .
+```
+
+Or install Rich directly:
+
+```bash
+pip install rich==13.7.1
+```
+
+Then run the client as usual:
+
+```bash
+python src/client.py register <username>
+# or
+python src/client.py login <username>
+```
+
+### Quick Command Reference
+
+Once logged in, you can use either the full command or just the number:
+
+1. `upload <filename>` - Upload a file to the server
+2. `download <filename>` - Download a file from the server 
+3. `show users` - Show all registered users
+4. `show files` - Show your files and files shared with you
+5. `share file <filename> <username>` - Share a file with another user
+6. `get shared <filename>` - Get a file shared with you
+7. `remove user` - Delete your account
+8. `logout` - Exit the application
+
+When using numbers (e.g., typing `1` instead of `upload <filename>`), you'll be prompted for any additional information needed.
 
 ## done
 

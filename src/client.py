@@ -11,7 +11,7 @@ import shutil
 import sys
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 import requests
 from cryptography.fernet import Fernet, InvalidToken
@@ -20,6 +20,14 @@ from cryptography.hazmat.backends import default_backend
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.exceptions import InvalidSignature
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.table import Table
+from rich.prompt import Prompt, Confirm
+from rich.markdown import Markdown
+from rich.traceback import install
+from rich.logging import RichHandler
 
 from utils.certificates import (
     check_certificate_validity,
@@ -67,10 +75,18 @@ CLIENT_FILES = Path("data/client/files").resolve()
 CA_PATH = Path("data/certificates").resolve()
 CA_CERT_PATH = CA_PATH / "ca_certificate.pem"
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Set up Rich console and install Rich traceback handler
+console = Console()
+install()  # Install rich traceback handler
 
+# Configure logging with Rich handler
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler(rich_tracebacks=True, console=console)]
+)
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 
@@ -285,23 +301,36 @@ def show_registered_users(
 ) -> None:
     """If you are registered, you can retrieve the ids of other registered users."""
     if not check_existing_user(username, USERPATH):
-        logger.info("User does not exist.")
+        console.print("[bold red]User does not exist.[/bold red]")
         return
 
     try:
         encrypted_user_register = get_user_register(user_id)
         encrypted_key = get_user_key(user_id)
     except requests.exceptions.RequestException:
-        logger.exception("An error occurred")
+        console.print_exception()
         return
+        
     decrypted_user_register, _ = decrypt_user_register(
         encrypted_key, encrypted_user_register, user_id
     )
+    
     if not isinstance(decrypted_user_register, list):
         decrypted_user_register = [decrypted_user_register]
+        
+    # Create a Rich table for displaying users
+    table = Table(title="Registered Users", show_header=True, header_style="bold magenta")
+    table.add_column("Username", style="dim")
+    table.add_column("User ID", style="dim")
+    
     for user in decrypted_user_register:
-        logger.info(f"Username: {user['username']}")
-
+        table.add_row(
+            user['username'],
+            user.get('unique_id', 'N/A')[:8] + "..." if user.get('unique_id') else 'N/A'
+        )
+    
+    console.print(table)
+    
 
 def show_files(user_id: str, user_key: bytes, path: Path = USERPATH) -> bool:
     """Retrieves the uploaded files of the user by looking at the <filename>.meta files
@@ -320,10 +349,10 @@ def show_files(user_id: str, user_key: bytes, path: Path = USERPATH) -> bool:
             )
             filenames.append(decrypt_fek(enc_filename, user_key))
         except FileNotFoundError:
-            logger.info("No metadata for requested file.")
+            console.print("[bold red]No metadata for requested file.[/bold red]")
             return None
         except InvalidToken:
-            logger.info("No permission to download this file.")
+            console.print("[bold red]No permission to download this file.[/bold red]")
             return None
 
     # get list of shared files with me
@@ -331,33 +360,61 @@ def show_files(user_id: str, user_key: bytes, path: Path = USERPATH) -> bool:
         encrypted_user_register = get_user_register(user_id)
         encrypted_key = get_user_key(user_id)
     except requests.exceptions.RequestException:
-        logger.exception("An error occurred")
+        console.print_exception()
         return None
+        
     decrypted_user_register, cipher = decrypt_user_register(
         encrypted_key, encrypted_user_register, user_id
     )
+    
     if not isinstance(decrypted_user_register, list):
         decrypted_user_register = [decrypted_user_register]
+        
     shared_filenames = []
     for user in decrypted_user_register:
         if user["user_id"] == user_id:
             shared_filenames.extend(
                 [
-                    file_data["filename"] + " from " + file_data["sender_name"]
+                    {"filename": file_data["filename"], "sender": file_data["sender_name"]}
                     for shared_file in user.get("shared_with_me", [])
                     for file_data in shared_file.values()
                 ]
             )
 
-    if not filenames:
-        logger.info("No files uploaded yet.")
-    else:
-        logger.info("Uploaded files:")
+    # Create tables for display
+    if not filenames and not shared_filenames:
+        console.print(Panel("[italic]No files found[/italic]", title="Files", border_style="blue"))
+        return True
+        
+    # Display uploaded files
+    if filenames:
+        uploaded_table = Table(title="Your Uploaded Files", show_header=True, header_style="bold blue")
+        uploaded_table.add_column("Filename", style="dim")
+        
         for filename in filenames:
-            logger.info(filename.decode("utf-8"))
-    logger.info("Shared files:")
-    for filename in shared_filenames:
-        logger.info(filename)
+            try:
+                decoded_filename = filename.decode("utf-8")
+                uploaded_table.add_row(decoded_filename)
+            except UnicodeDecodeError:
+                uploaded_table.add_row("[red]Invalid filename encoding[/red]")
+                
+        console.print(uploaded_table)
+    else:
+        console.print(Panel("[italic]No uploaded files[/italic]", title="Your Files", border_style="blue"))
+    
+    # Display shared files
+    if shared_filenames:
+        shared_table = Table(title="Files Shared With You", show_header=True, header_style="bold green")
+        shared_table.add_column("Filename", style="dim")
+        shared_table.add_column("Shared By", style="dim")
+        
+        for file_info in shared_filenames:
+            shared_table.add_row(file_info["filename"], file_info["sender"])
+            
+        console.print(shared_table)
+    else:
+        console.print(Panel("[italic]No shared files[/italic]", title="Shared Files", border_style="green"))
+        
     return True
 
 
@@ -373,57 +430,97 @@ def upload_file(
         file_name (str): file must be in CLIENT_FILES
     """
     if not Path(CLIENT_FILES / file_name).exists():
+        console.print(f"[bold red]File not found: {file_name}[/bold red]")
         raise FileNotFoundError
+        
     file_path = Path(CLIENT_FILES / file_name).resolve()
-    fek = Fernet.generate_key()
-    enc_file = encrypt_file(file_path, fek)
-    # sign the file with the user private key
-    private_key: rsa.RSAPrivateKey = load_key_from_disk(
-        USERPATH / user_id, f"{user_id}.pem"
-    )
-    signed_file = private_key.sign(
-        enc_file,
-        padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.MAX_LENGTH,
-        ),
-        hashes.SHA256(),
-    )
-    original_filename = file_path.name
-    hashed_filename = hash_filename(original_filename, fek)
-    encrypted_fek: bytes = encrypt_fek(fek, user_master_key)
-    encrypted_filename = encrypt_fek(
-        original_filename.encode(), user_master_key
-    )
-    logger.debug(f"upload_file(): Hashed filename: {hashed_filename}")
-    logger.debug(f"upload_file(): Encrypted filename: {encrypted_filename}")
-    enc_file_path = USERPATH / user_id
-
-    store_file_metadata(
-        encrypted_fek, original_filename, encrypted_filename, enc_file_path
-    )
-    # send both file and signature combined
-    files = {"file": (hashed_filename, enc_file + signed_file)}
-    headers = {"Authorization": API_TOKEN}
-    cert = (
-        USERPATH / user_id / f"{user_id}_cert.pem",
-        USERPATH / user_id / f"{user_id}.pem",
-    )
-    verify = CA_CERT_PATH
-    try:
-        response = requests.post(
-            f"{SERVER_URL}/upload",
-            files=files,
-            headers=headers,
-            cert=cert,
-            verify=verify,
-            timeout=10,
+    file_size = file_path.stat().st_size
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console
+    ) as progress:
+        # Step 1: Generate encryption key
+        prepare_task = progress.add_task("[green]Preparing file...", total=100)
+        
+        fek = Fernet.generate_key()
+        progress.update(prepare_task, advance=20)
+        
+        # Step 2: Encrypt file
+        progress.update(prepare_task, description="[green]Encrypting file...")
+        enc_file = encrypt_file(file_path, fek)
+        progress.update(prepare_task, advance=30)
+        
+        # Step 3: Sign the file
+        progress.update(prepare_task, description="[green]Signing file...")
+        private_key: rsa.RSAPrivateKey = load_key_from_disk(
+            USERPATH / user_id, f"{user_id}.pem"
         )
-        response.raise_for_status()
-        json_response = response.json()
-        logger.info(json_response.get("message", "No message in response."))
-    except requests.exceptions.RequestException as e:
-        logger.exception("An error occurred: %s", e)
+        signed_file = private_key.sign(
+            enc_file,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+        progress.update(prepare_task, advance=20)
+        
+        # Step 4: Prepare metadata
+        progress.update(prepare_task, description="[green]Preparing metadata...")
+        original_filename = file_path.name
+        hashed_filename = hash_filename(original_filename, fek)
+        encrypted_fek: bytes = encrypt_fek(fek, user_master_key)
+        encrypted_filename = encrypt_fek(
+            original_filename.encode(), user_master_key
+        )
+        logger.debug(f"upload_file(): Hashed filename: {hashed_filename}")
+        logger.debug(f"upload_file(): Encrypted filename: {encrypted_filename}")
+        enc_file_path = USERPATH / user_id
+
+        store_file_metadata(
+            encrypted_fek, original_filename, encrypted_filename, enc_file_path
+        )
+        progress.update(prepare_task, advance=20)
+        
+        # Step 5: Upload file
+        progress.update(prepare_task, description="[green]Uploading file...")
+        progress.update(prepare_task, completed=90)
+        
+        # send both file and signature combined
+        files = {"file": (hashed_filename, enc_file + signed_file)}
+        headers = {"Authorization": API_TOKEN}
+        cert = (
+            USERPATH / user_id / f"{user_id}_cert.pem",
+            USERPATH / user_id / f"{user_id}.pem",
+        )
+        verify = CA_CERT_PATH
+        
+        try:
+            response = requests.post(
+                f"{SERVER_URL}/upload",
+                files=files,
+                headers=headers,
+                cert=cert,
+                verify=verify,
+                timeout=10,
+            )
+            progress.update(prepare_task, advance=10)
+            
+            response.raise_for_status()
+            json_response = response.json()
+            
+            # Show success message outside the progress bar
+            console.print(f"[bold green]{json_response.get('message', 'File uploaded successfully!')}[/bold green]")
+            
+        except requests.exceptions.RequestException as e:
+            console.print(f"[bold red]Upload failed: {str(e)}[/bold red]")
+            logger.debug(f"Upload error details: {e}", exc_info=True)
 
 
 def download_file(
@@ -438,70 +535,116 @@ def download_file(
     ----
         filename (str): the name including ending (NOT the path)
     """
-    file_identifier = filename.split(".")[0]
-    try:
-        encrypted_fek, _ = load_file_metadata(
-            file_identifier, user_id, USERPATH
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console
+    ) as progress:
+        # Step 1: Retrieve file metadata
+        prepare_task = progress.add_task("[green]Preparing download...", total=100)
+        
+        file_identifier = filename.split(".")[0]
+        try:
+            encrypted_fek, _ = load_file_metadata(
+                file_identifier, user_id, USERPATH
+            )
+            fek = decrypt_fek(encrypted_fek, user_master_key)
+            progress.update(prepare_task, advance=20)
+        except FileNotFoundError:
+            progress.stop()
+            console.print("[bold red]No metadata for requested file.[/bold red]")
+            return
+        except InvalidToken:
+            progress.stop()
+            console.print("[bold red]No permission to download this file.[/bold red]")
+            return
+            
+        # Step 2: Calculate filename hash
+        progress.update(prepare_task, description="[green]Preparing request...")
+        hashed_filename = hash_filename(filename, fek)
+        headers = {"Authorization": API_TOKEN}
+        cert = (
+            USERPATH / user_id / f"{user_id}_cert.pem",
+            USERPATH / user_id / f"{user_id}.pem",
         )
-        fek = decrypt_fek(encrypted_fek, user_master_key)
-    except FileNotFoundError:
-        logger.info("No metadata for requested file.")
-        return
-    except InvalidToken:
-        logger.info("No permission to download this file.")
-        return
-    hashed_filename = hash_filename(filename, fek)
-    headers = {"Authorization": API_TOKEN}
-    cert = (
-        USERPATH / user_id / f"{user_id}_cert.pem",
-        USERPATH / user_id / f"{user_id}.pem",
-    )
-    verify = CA_CERT_PATH
-    try:
-        response = requests.get(
-            f"{SERVER_URL}/download/{hashed_filename}",
-            headers=headers,
-            cert=cert,
-            verify=verify,
-            timeout=10,
-        )
-    except requests.exceptions.SSLError as se:
-        logger.exception("download_file(): An ssl error occurred: %s", se)
-        return
-    except requests.exceptions.RequestException as re:
-        logger.exception("download_file(): An error occurred.")
-        return
-    if response.status_code == 200:
-        if not DOWNLOAD_FOLDER.exists():
-            DOWNLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+        verify = CA_CERT_PATH
+        progress.update(prepare_task, advance=10)
+        
+        # Step 3: Send download request
+        progress.update(prepare_task, description="[green]Downloading file...")
+        try:
+            response = requests.get(
+                f"{SERVER_URL}/download/{hashed_filename}",
+                headers=headers,
+                cert=cert,
+                verify=verify,
+                timeout=10,
+                stream=True,  # Use streaming for better progress reporting
+            )
+            progress.update(prepare_task, advance=20)
+        except requests.exceptions.SSLError as se:
+            progress.stop()
+            console.print(f"[bold red]SSL error during download: {str(se)}[/bold red]")
+            logger.debug(f"SSL error details: {se}", exc_info=True)
+            return
+        except requests.exceptions.RequestException as re:
+            progress.stop()
+            console.print(f"[bold red]Download failed: {str(re)}[/bold red]")
+            logger.debug(f"Download error details: {re}", exc_info=True)
+            return
+            
+        if response.status_code == 200:
+            # Step 4: Process downloaded file
+            progress.update(prepare_task, description="[green]Processing file...")
+            
+            if not DOWNLOAD_FOLDER.exists():
+                DOWNLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 
-        encrypted_file = response.content
-        signature_length = 256
-        encrypted_file, signature = (
-            encrypted_file[:-signature_length],
-            encrypted_file[-signature_length:],
-        )
-        # check signature of file with my public key
-        public_key = load_cert_from_disk(
-            USERPATH / user_id, f"{user_id}_cert.pem"
-        ).public_key()
-        public_key.verify(
-            signature,
-            encrypted_file,
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH,
-            ),
-            hashes.SHA256(),
-        )
-        decrypted_file_path = decrypt_file(
-            fek, filename=filename, file_data=encrypted_file
-        )
-        logger.info(f"File downloaded and decrypted to {decrypted_file_path}")
-    else:
-        logger.info(
-            f"Failed to download file. Status code: {response.status_code}"
-        )
+            encrypted_file = response.content
+            signature_length = 256
+            encrypted_file, signature = (
+                encrypted_file[:-signature_length],
+                encrypted_file[-signature_length:],
+            )
+            progress.update(prepare_task, advance=20)
+            
+            # Step 5: Verify signature
+            progress.update(prepare_task, description="[green]Verifying signature...")
+            try:
+                # check signature of file with my public key
+                public_key = load_cert_from_disk(
+                    USERPATH / user_id, f"{user_id}_cert.pem"
+                ).public_key()
+                public_key.verify(
+                    signature,
+                    encrypted_file,
+                    padding.PSS(
+                        mgf=padding.MGF1(hashes.SHA256()),
+                        salt_length=padding.PSS.MAX_LENGTH,
+                    ),
+                    hashes.SHA256(),
+                )
+                progress.update(prepare_task, advance=15)
+            except InvalidSignature:
+                progress.stop()
+                console.print("[bold red]Invalid file signature. The file may have been tampered with.[/bold red]")
+                return
+                
+            # Step 6: Decrypt file
+            progress.update(prepare_task, description="[green]Decrypting file...")
+            decrypted_file_path = decrypt_file(
+                fek, filename=filename, file_data=encrypted_file
+            )
+            progress.update(prepare_task, advance=15, completed=100)
+            
+            # Success message
+            console.print(f"[bold green]File downloaded and decrypted to:[/bold green] [blue]{decrypted_file_path}[/blue]")
+        else:
+            progress.stop()
+            console.print(f"[bold red]Failed to download file. Status code: {response.status_code}[/bold red]")
 
 
 def share_file(
@@ -828,125 +971,189 @@ def get_shared_file(
 
 def main() -> None:
     """Runs client application."""
+    console.print(Panel.fit(
+        "[bold blue]Secure File Sharing Client[/bold blue]\n"
+        "[dim]A secure way to share files with others[/dim]",
+        border_style="blue",
+        padding=(1, 2)
+    ))
+    
     if len(sys.argv) != 3:
-        logger.info("Usage:")
-        logger.info("  Register: client.py register <username>")
-        logger.info("  Login: client.py login <username>")
+        console.print(Panel(
+            "[bold]Usage:[/bold]\n"
+            "  [green]Register:[/green] client.py register <username>\n"
+            "  [green]Login:[/green] client.py login <username>",
+            title="Help",
+            border_style="yellow"
+        ))
         sys.exit(1)
 
     action = sys.argv[1]
     username = sys.argv[2]
 
     if action == "register":
+        console.print("[yellow]Registration Mode[/yellow]")
         password: str = getpass.getpass("Enter password: ")
-        register_user(username, password, USERPATH)
+        
+        with console.status("[bold green]Registering user...[/bold green]"):
+            register_user(username, password, USERPATH)
 
     elif action == "login":
+        console.print("[yellow]Login Mode[/yellow]")
         password: str = getpass.getpass("Enter password: ")
-        if authenticate_user(username, password, USERPATH):
+        
+        with console.status("[bold green]Authenticating...[/bold green]"):
+            auth_success = authenticate_user(username, password, USERPATH)
+            
+        if auth_success:
             unique_id = get_user_id(username, USERPATH)
             userfile_path = USERPATH / unique_id / f"{unique_id}.json"
             user_key = get_user_master_key(userfile_path, username, password)
-            logger.info("Welcome %s!", username)
-
-            # NOTE: this is for sending the test 2fa test email
-            # requests.post(
-            #     f"{SERVER_URL}/send_email",
-            #     json={"username": username},
-            #     headers={"Authorization": API_TOKEN},
-            #     cert=(
-            #         USERPATH / unique_id / f"{unique_id}_cert.pem",
-            #         USERPATH / unique_id / f"{unique_id}.pem",
-            #     ),
-            #     verify=CA_CERT_PATH,
-            #     timeout=10,
-            # )
+            
+            console.print(f"[bold green]Welcome, {username}![/bold green]")
 
             # Interactive session after successful login
             while True:
-                logger.info("# Please choose an action:")
-                logger.info("  upload <filename>")
-                logger.info("  download <filename>")
-                logger.info("  show users")
-                logger.info("  show files")
-                logger.info("  share file <filename> <username>")
-                logger.info("  get shared <filename>")
-                logger.info("  remove user")
-                logger.info("  logout")
-                user_input = input(">").strip()
+                # Display menu in a panel
+                menu = Panel(
+                    "\n".join([
+                        "[bold cyan]1. upload <filename>[/bold cyan] - Upload a file to the server",
+                        "[bold cyan]2. download <filename>[/bold cyan] - Download a file from the server",
+                        "[bold cyan]3. show users[/bold cyan] - Show all registered users",
+                        "[bold cyan]4. show files[/bold cyan] - Show your files and files shared with you",
+                        "[bold cyan]5. share file <filename> <username>[/bold cyan] - Share a file with another user",
+                        "[bold cyan]6. get shared <filename>[/bold cyan] - Get a file shared with you",
+                        "[bold cyan]7. remove user[/bold cyan] - Delete your account",
+                        "[bold cyan]8. logout[/bold cyan] - Exit the application",
+                    ]),
+                    title="Available Commands",
+                    border_style="blue"
+                )
+                console.print(menu)
+                
+                # Get user input with Rich prompt
+                user_input = Prompt.ask("[bold blue]>[/bold blue]").strip()
 
-                if user_input == "logout":
-                    logger.info("Logging out.")
+                # Handle numbered commands
+                if user_input == "8" or user_input == "logout":
+                    console.print("[yellow]Logging out...[/yellow]")
                     break
-                if user_input.startswith("upload "):
-                    file_name = user_input[len("upload ") :].strip()
+                    
+                # Handle upload command (1 or upload...)
+                elif user_input == "1" or user_input.startswith("upload "):
+                    if user_input == "1":
+                        file_name = Prompt.ask("[bold blue]Enter filename to upload[/bold blue]")
+                    else:
+                        file_name = user_input[len("upload ") :].strip()
+                    
                     file_name = sanitize_filename(file_name)
                     try:
                         upload_file(file_name, user_key, unique_id)
                     except FileNotFoundError:
-                        logger.info("File not found for upload.")
-                    except Exception:
-                        logger.info("Invalid input. Please try again.")
-                elif user_input.startswith("download "):
-                    filename = user_input[len("download ") :].strip()
+                        console.print(f"[bold red]File not found: {file_name}[/bold red]")
+                    except Exception as e:
+                        console.print(f"[bold red]Error: {str(e)}[/bold red]")
+                        
+                # Handle download command (2 or download...)
+                elif user_input == "2" or user_input.startswith("download "):
+                    if user_input == "2":
+                        filename = Prompt.ask("[bold blue]Enter filename to download[/bold blue]")
+                    else:
+                        filename = user_input[len("download ") :].strip()
+                        
                     filename = sanitize_filename(filename)
                     try:
                         download_file(filename, user_key, unique_id)
                     except InvalidSignature:
-                        logger.info("File signature invalid.")
-                    except Exception:
-                        logger.info("Invalid input. Please try again.")
-                elif user_input == "show users":
-                    show_registered_users(username, unique_id, USERPATH)
-                elif user_input == "show files":
-                    show_files(unique_id, user_key, USERPATH)
-                elif user_input.startswith("share file "):
-                    try:
-                        file_to_share, share_with = user_input[
-                            len("share file ") :
-                        ].split()
-                    except ValueError:
-                        logger.info("Invalid input. Please use format: share file <filename> <username>")
-                        continue
-                    logger.info(f"Sharing {file_to_share} with {share_with}")
-                    file_to_share = sanitize_filename(file_to_share)
-                    try:
-                        result = share_file(
-                            file_to_share,
-                            share_with,
-                            unique_id,
-                            username,
-                            user_key,
-                        )
-                        if result is True:
-                            logger.info(f"Successfully shared {file_to_share} with {share_with}")
+                        console.print("[bold red]File signature invalid.[/bold red]")
                     except Exception as e:
-                        logger.error(f"Failed to share file: {str(e)}")
-                        logger.debug(f"Exception details: {e}", exc_info=True)
-                elif user_input.startswith("get shared "):
-                    filename = user_input[len("get shared ") :].strip()
+                        console.print(f"[bold red]Error: {str(e)}[/bold red]")
+                        
+                # Handle show users command (3 or show users)
+                elif user_input == "3" or user_input == "show users":
+                    show_registered_users(username, unique_id, USERPATH)
+                    
+                # Handle show files command (4 or show files)
+                elif user_input == "4" or user_input == "show files":
+                    show_files(unique_id, user_key, USERPATH)
+                    
+                # Handle share file command (5 or share file...)
+                elif user_input == "5" or user_input.startswith("share file "):
+                    if user_input == "5":
+                        file_to_share = Prompt.ask("[bold blue]Enter filename to share[/bold blue]")
+                        share_with = Prompt.ask("[bold blue]Enter username to share with[/bold blue]")
+                    else:
+                        try:
+                            file_to_share, share_with = user_input[
+                                len("share file ") :
+                            ].split()
+                        except ValueError:
+                            console.print(
+                                "[bold red]Invalid input. Please use format:[/bold red] [blue]share file <filename> <username>[/blue]"
+                            )
+                            continue
+                        
+                    console.print(f"Sharing [green]{file_to_share}[/green] with [green]{share_with}[/green]")
+                    file_to_share = sanitize_filename(file_to_share)
+                    
+                    with console.status(f"[bold green]Sharing file with {share_with}...[/bold green]"):
+                        try:
+                            result = share_file(
+                                file_to_share,
+                                share_with,
+                                unique_id,
+                                username,
+                                user_key,
+                            )
+                            if result is True:
+                                console.print(f"[bold green]Successfully shared {file_to_share} with {share_with}[/bold green]")
+                        except Exception as e:
+                            console.print(f"[bold red]Failed to share file: {str(e)}[/bold red]")
+                            logger.debug(f"Exception details: {e}", exc_info=True)
+                            
+                # Handle get shared command (6 or get shared...)
+                elif user_input == "6" or user_input.startswith("get shared "):
+                    if user_input == "6":
+                        filename = Prompt.ask("[bold blue]Enter shared filename to get[/bold blue]")
+                    else:
+                        filename = user_input[len("get shared ") :].strip()
+                        
                     filename = sanitize_filename(filename)
                     logger.debug(f"get shared: {filename}")
-                    try:
-                        get_shared_file(filename, unique_id, user_key)
-                    except Exception as e:
-                        logger.info("Invalid input. Please try again.")
-                        logger.debug(e)
-                elif user_input == "remove user":
-                    remove_user(
-                        username, unique_id, USERPATH, user_master_key=user_key
-                    )
-                    logger.info("User removed. Logging out.")
-                    break
+                    
+                    with console.status(f"[bold green]Getting shared file {filename}...[/bold green]"):
+                        try:
+                            get_shared_file(filename, unique_id, user_key)
+                        except Exception as e:
+                            console.print(f"[bold red]Failed to get shared file: {str(e)}[/bold red]")
+                            logger.debug(f"Exception details: {e}", exc_info=True)
+                            
+                # Handle remove user command (7 or remove user)
+                elif user_input == "7" or user_input == "remove user":
+                    if Confirm.ask("[bold red]Are you sure you want to remove your account? This cannot be undone.[/bold red]"):
+                        with console.status("[bold yellow]Removing user account...[/bold yellow]"):
+                            remove_user(
+                                username, unique_id, USERPATH, user_master_key=user_key
+                            )
+                        console.print("[bold yellow]User removed. Logging out.[/bold yellow]")
+                        break
+                    else:
+                        console.print("[green]Account removal cancelled.[/green]")
+                        
                 else:
-                    logger.info("Invalid command. Please try again.")
+                    console.print("[bold red]Invalid command. Please try again.[/bold red]")
+                    console.print("Use numbers 1-8 or the full command names shown in the menu.")
+                    
+                # Add a separator between commands for better readability
+                console.print("─" * console.width)
+                
         else:
-            logger.info("Authentication failed.")
+            console.print("[bold red]Authentication failed.[/bold red]")
 
     else:
-        logger.info('Invalid action. Use "register" or "login".')
+        console.print("[bold red]Invalid action.[/bold red] Use [green]register[/green] or [green]login[/green].")
 
-    logger.info("Done.")
+    console.print("[bold blue]Done.[/bold blue]")
 
 
 if __name__ == "__main__":
