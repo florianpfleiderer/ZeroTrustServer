@@ -4,6 +4,20 @@ instance/*
 .webassets-cache
 .env
 
+### Project Specific ###
+# Ignore data directories that contain user files, certificates, and sensitive information
+data/client/downloaded_files/*
+data/client/metadata/*
+data/client/users/*
+data/server/users/*
+data/server/uploaded_files/*
+# Ensure directories exist in git
+!data/client/downloaded_files/.gitkeep
+!data/client/metadata/.gitkeep
+!data/client/users/.gitkeep
+!data/server/users/.gitkeep
+!data/server/uploaded_files/.gitkeep
+
 ### Flask.Python Stack ###
 # Byte-compiled / optimized / DLL files
 __pycache__/
