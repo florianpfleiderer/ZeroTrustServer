@@ -26,11 +26,11 @@ Enter password & random mail (no email sent). 2Fa Code will be in `data/server/u
 
 `>upload frog.jpg`
 
-`>share file frog.jpg user1`
+`>share file frog.jpg <registered-user>`
 
 `>logout`
 
-`client login othername`
+`client login <registered-user>`
 
 `show files` will show "shared files: ..."
 

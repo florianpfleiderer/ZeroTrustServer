@@ -46,7 +46,7 @@ def get_user_register(user_id: str) -> bytes:
 
 
 def get_user_cert(user_id: str) -> bytes:
-    logger.debug(f"Getting user cert for user {user}")
+    logger.debug(f"Getting user cert for user {user_id}")
     response = requests.get(
         f"{SERVER_URL}/get_user_cert",
         json={"user_id": user_id},

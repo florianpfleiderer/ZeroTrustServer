@@ -548,23 +548,45 @@ def share_file(
     Since the receiving user needs to also know the unique filename, its
     contained in the metadata file.
     """
-    with Path(USERPATH / "users.json").open() as f:
-        users = json.load(f)
+    # Try to open the users.json file
+    try:
+        with Path(USERPATH / "users.json").open() as f:
+            users = json.load(f)
+    except FileNotFoundError:
+        logger.error("ERROR: users.json file not found. Please register users first.")
+        return False
+    except json.JSONDecodeError:
+        logger.error("ERROR: users.json contains invalid JSON data.")
+        return False
+        
     if not isinstance(users, list):
         users = [users]
+        
+    # Find the user to share with
+    share_with_id = None
     for user in users:
         if user["username"] == share_with:
             share_with_id = user["unique_id"]
             break
-
-    recipient_cert: bytes = get_user_cert(share_with_id)
-    recipient_cert = x509.load_pem_x509_certificate(
-        recipient_cert, default_backend()
-    )
-    if not check_certificate_validity(recipient_cert):
-        logger.info("Certificate not valid.")
+            
+    if share_with_id is None:
+        logger.error(f"ERROR: User '{share_with}' not found in registered users. Please check the username and try again.")
         return False
-    logger.debug("share_file(): cetrificate check passed.")
+
+    # Get recipient certificate
+    try:
+        recipient_cert: bytes = get_user_cert(share_with_id)
+        recipient_cert = x509.load_pem_x509_certificate(
+            recipient_cert, default_backend()
+        )
+    except Exception as e:
+        logger.error(f"ERROR: Failed to get certificate for user '{share_with}': {str(e)}")
+        return False
+        
+    if not check_certificate_validity(recipient_cert):
+        logger.error(f"ERROR: Certificate for user '{share_with}' is not valid.")
+        return False
+    logger.debug("share_file(): certificate check passed.")
 
     # get fek and decrypt it
     file_identifier = file_to_share.split(".")[0]
@@ -583,10 +605,10 @@ def share_file(
         )
         logger.debug("share_file(): filename: %s", filename)
     except FileNotFoundError:
-        logger.info("share file(): No files uploaded.")
+        logger.error(f"ERROR: File '{file_to_share}' not found. Please check that you have uploaded this file.")
         return None
     except InvalidToken:
-        logger.info("No permission to download this file.")
+        logger.error("ERROR: No permission to access this file. Invalid encryption key.")
         return None
     public_key = recipient_cert.public_key()
     new_encrypted_fek = public_key.encrypt(
@@ -884,20 +906,23 @@ def main() -> None:
                             len("share file ") :
                         ].split()
                     except ValueError:
-                        logger.info("Invalid input. Please try again.")
+                        logger.info("Invalid input. Please use format: share file <filename> <username>")
                         continue
                     logger.info(f"Sharing {file_to_share} with {share_with}")
                     file_to_share = sanitize_filename(file_to_share)
                     try:
-                        share_file(
+                        result = share_file(
                             file_to_share,
                             share_with,
                             unique_id,
                             username,
                             user_key,
                         )
-                    except Exception:
-                        logger.info("Invalid input. Please try again.")
+                        if result is True:
+                            logger.info(f"Successfully shared {file_to_share} with {share_with}")
+                    except Exception as e:
+                        logger.error(f"Failed to share file: {str(e)}")
+                        logger.debug(f"Exception details: {e}", exc_info=True)
                 elif user_input.startswith("get shared "):
                     filename = user_input[len("get shared ") :].strip()
                     filename = sanitize_filename(filename)
